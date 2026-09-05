@@ -1,0 +1,20 @@
+[package]
+name = "pairdrop-cli"
+description = "Headless PairDrop peer for testing against a real instance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pairdrop-probe"
+path = "src/main.rs"
+
+[dependencies]
+pairdrop-proto = { path = "../pairdrop-proto" }
+pairdrop-net = { path = "../pairdrop-net" }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+anyhow = "1.0.104"
+clap = { version = "4.5.61", features = ["derive"] }
+rustls = "0.23.43"

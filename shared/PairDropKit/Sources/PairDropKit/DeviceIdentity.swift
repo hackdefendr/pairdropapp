@@ -27,10 +27,18 @@ public struct DeviceIdentity: Sendable {
                        displayName: machineName())
     }
 
-    /// ua-parser-js has no generic browser fallback, so the best we can do is have it
-    /// recognise the OS and nothing else: the server then labels us plain "Mac".
-    /// (Including `Macintosh` makes it report the device model as "Macintosh", giving
-    /// the much worse "Mac Macintosh"; verified against the server's own ua-parser-js.)
+    /// ua-parser-js has no generic browser fallback, so it recognises the OS and nothing
+    /// else. The server builds the label as `os.name + " " + (device.model ?? browser.name)`
+    /// with no guard for the undefined case (server/peer.js), so it ends up as
+    /// "Mac undefined" — and no User-Agent avoids that without impersonating a real
+    /// browser. Verified against the server's own ua-parser-js.
+    ///
+    /// It barely matters: PairDrop's UI shows the *display* name, and once the data
+    /// channel opens we send `display-name-changed` with the real machine name. This is
+    /// only what a peer sees in the moment before connecting.
+    ///
+    /// (Including `Macintosh` is actively worse — it sets the device model, giving
+    /// "Mac Macintosh".)
     public static func defaultUserAgent(appVersion: String = "1.0") -> String {
         let os = ProcessInfo.processInfo.operatingSystemVersion
         #if os(macOS)

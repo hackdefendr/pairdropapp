@@ -28,28 +28,47 @@ crates/
   pairdrop-proto/   Wire protocol. No I/O, no async, no toolkit — builds anywhere.
     cyrb53          Connection-verification hash, matching the browser's
     endpoint        User-typed address → /config and WebSocket URLs
+    signaling       Server frames in and out
     transfer        Data-channel control frames
+  pairdrop-net/     WebSocket transport: connect, keepalive, reconnect, TLS
+  pairdrop-cli/     `pairdrop-probe` — headless peer and instance diagnostic
 ```
 
-Still to come: signaling client (`tokio-tungstenite`), the WebRTC data channel, the
-transfer state machine, secret storage via the Secret Service, and the GTK4 app.
+Still to come: the WebRTC data channel, the transfer state machine, secret storage via the
+Secret Service, and the GTK4 app.
 
 ## Building
 
-The protocol crate is pure Rust, so it builds and tests **on any platform** — including
-the Mac this is being developed on:
+Everything so far is pure Rust with rustls rather than the platform TLS stack, so it
+builds and tests **on any platform** — including the Mac this is being developed on:
 
 ```sh
 cd linux
 cargo test
+cargo run --bin pairdrop-probe -- https://drop.example.com --quit-after 20
 ```
 
-Once the GTK layer lands, that part needs Linux. A container is enough to compile and run
-the headless pieces:
+Verified building and running on Linux too:
 
 ```sh
 docker run --rm -v "$PWD":/w -w /w rust:1.94-slim cargo test
 ```
+
+## `pairdrop-probe`
+
+A headless peer: it connects, joins the IP room, and reports what the server says.
+Transfers aren't wired up yet — that needs the data channel.
+
+It doubles as an instance diagnostic. If peers show "couldn't connect", this says why:
+
+```
+ICE:      1 STUN, 0 TURN; ws fallback off
+  ⚠ STUN only and no fallback: peers that can't reach each other directly
+    have no path. Add a TURN server, or run the instance with --include-ws-fallback.
+```
+
+`--allow-untrusted-tls` for a self-signed certificate, `--quit-after N` to exit on a
+timer, `--max-attempts N` to stop retrying and exit non-zero.
 
 The UI itself needs a real desktop session — a container has no display server, no D-Bus
 session bus, and no tray host, and X11 forwarding wouldn't exercise the tray or
@@ -77,5 +96,15 @@ Two things the Swift port learned the hard way, both load-bearing:
   end the partition once the total *reaches or passes* 1,000,000. That's 16 chunks. Making
   the last chunk land exactly on 1,000,000 would desynchronise the handshake against every
   other client, and only on transfers over a megabyte.
+- **`sdpMLineIndex` has a capital L.** serde's `rename_all = "camelCase"` produces
+  `sdpMlineIndex`, which silently never matches, and an ICE candidate that loses its
+  m-line index is dropped by some peers and accepted by others. Renamed explicitly, with
+  a test on both the parse and the serialize side.
+- **The server can't name a native client.** It builds the device label as
+  `os.name + " " + (device.model ?? browser.name)` with no guard for the undefined case,
+  and ua-parser-js has no generic-browser fallback — so any native client reads as
+  "Linux undefined" (the macOS one is "Mac undefined"). No User-Agent avoids it without
+  impersonating a browser. It only shows before a data channel opens; after that
+  `display-name-changed` carries the real hostname.
 
 The rest of the wire protocol is documented in [`../macos/README.md`](../macos/README.md).

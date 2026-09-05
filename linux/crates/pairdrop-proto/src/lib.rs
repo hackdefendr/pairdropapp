@@ -9,10 +9,15 @@
 
 pub mod cyrb53;
 pub mod endpoint;
+pub mod signaling;
 pub mod transfer;
 
 pub use cyrb53::{connection_hash, hash};
 pub use endpoint::{InstanceConfig, ServerEndpoint};
+pub use signaling::{
+    ClientMessage, IceCandidate, IceServerConfig, MessageSender, PeerInfo, PeerName, RoomRef,
+    RoomType, RtcConfig, ServerMessage, SessionDescription, WsConfig,
+};
 pub use transfer::{FileHeader, TransferMessage, TransferRequest};
 
 /// Bytes per binary message on the data channel.
@@ -31,6 +36,7 @@ pub const MAX_PARTITION_SIZE: usize = 1_000_000;
 
 /// Whole chunks emitted before the sender waits for an acknowledgement.
 // Written out rather than using `div_ceil`, which isn't const-stable at our MSRV.
+#[allow(clippy::manual_div_ceil)]
 pub const CHUNKS_PER_PARTITION: usize = (MAX_PARTITION_SIZE + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
 /// The name the caller gives its data channel; the answering side matches on it.
@@ -42,6 +48,9 @@ mod tests {
 
     /// Pins the overshoot, since the obvious "a partition is one megabyte" reading is
     /// wrong and would break interop in a way only a >1 MB transfer reveals.
+    // The constant-value assertions are the point: they document the arithmetic so a
+    // later edit to either constant fails here rather than in the field.
+    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn a_partition_overshoots_the_threshold() {
         assert_eq!(CHUNKS_PER_PARTITION, 16);
