@@ -388,9 +388,10 @@ fn ask_about_request(
         n => format!("{n} files ({})", human_size(total_size)),
     };
 
-    let dialog = adw::MessageDialog::builder()
-        .transient_for(&ui.window)
-        .modal(true)
+    // AlertDialog rather than the deprecated MessageDialog: it's an AdwDialog, so it
+    // sizes itself against the parent instead of demanding a height the window may not
+    // have — which is what produced a "needs at least 182" warning on every prompt.
+    let dialog = adw::AlertDialog::builder()
         .heading(format!("{peer_name} wants to send you:"))
         .body(body)
         .build();
@@ -400,6 +401,7 @@ fn ask_about_request(
     dialog.set_default_response(Some("accept"));
     dialog.set_close_response("decline");
 
+    let window = ui.window.clone();
     let ui = Rc::clone(ui);
     dialog.connect_response(None, move |_, response| {
         ui.engine.send(Command::RespondToRequest {
@@ -407,7 +409,7 @@ fn ask_about_request(
             accept: response == "accept",
         });
     });
-    dialog.present();
+    dialog.present(Some(&window));
 }
 
 // MARK: formatting

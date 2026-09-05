@@ -81,6 +81,7 @@ Needs GTK 4 and libadwaita development packages:
 | | |
 |---|---|
 | Debian, Ubuntu, Kali | `sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev` |
+| | *libadwaita 1.5 or newer* — the Flatpak carries its own, so this only limits source builds |
 | Fedora | `sudo dnf install gcc pkgconf gtk4-devel libadwaita-devel` |
 | Arch | `sudo pacman -S base-devel gtk4 libadwaita` |
 
