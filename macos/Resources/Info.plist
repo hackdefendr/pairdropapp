@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>PairDropApp</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.pairdrop.mac</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>PairDrop</string>
+	<key>CFBundleDisplayName</key>
+	<string>PairDrop</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleIconFile</key>
+	<string>PairDrop</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+
+	<!-- Menu bar only: no Dock icon, no windows at launch. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- Self-hosted instances are commonly plain http on a LAN address. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>PairDrop connects directly to devices on your local network to transfer files.</string>
+
+	<key>NSHumanReadableCopyright</key>
+	<string>PairDrop protocol by schlagmichdoch, GPL-3.0.</string>
+</dict>
+</plist>

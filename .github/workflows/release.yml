@@ -1,0 +1,53 @@
+name: Release
+
+# Builds the macOS artifacts when a version tag is pushed and attaches them to the
+# release. These are ad-hoc signed — the signing identity isn't on the runner — so a
+# signed and notarized build still has to be uploaded by hand from a Mac that has the
+# Developer ID. See docs/RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test the protocol layer
+        working-directory: shared/PairDropKit
+        run: swift test
+
+      - name: Package
+        working-directory: macos
+        run: ./package.sh "${{ steps.version.outputs.value }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PairDrop-macOS-${{ steps.version.outputs.value }}
+          path: macos/dist/*
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: macos/dist/*
+          draft: true
+          generate_release_notes: true
