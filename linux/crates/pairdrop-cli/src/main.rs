@@ -2,10 +2,11 @@
 //! GUI — and for diagnosing an instance that peers can't connect through.
 //!
 //! It connects, joins the IP room, and opens a data channel to every peer it finds,
-//! reporting the verification hash for each. File transfers are the next piece: the
-//! state machine on top of the channel isn't written yet.
+//! reporting the verification hash for each. With `--send` it transfers files; incoming
+//! transfers are always accepted, which is what makes it useful as a test receiver.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,11 +14,26 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use pairdrop_net::{connect, SignalingConfig, SignalingEvent, SignalingHandle, SignalingState};
 use pairdrop_proto::{
-    ClientMessage, RoomRef, RoomType, RtcConfig, ServerEndpoint, ServerMessage, TransferMessage,
-    WsConfig,
+    ClientMessage, RoomRef, RoomType, RtcConfig, ServerEndpoint, ServerMessage, WsConfig,
 };
 use pairdrop_rtc::{RtcEvent, RtcSession};
+use pairdrop_transfer::{Channel, Transfer, TransferError, TransferEvent};
 use tokio::sync::mpsc;
+
+/// Bridges the data channel to the transfer state machine. A newtype because both the
+/// trait and `RtcSession` live in other crates.
+struct RtcChannel(Arc<RtcSession>);
+
+#[async_trait::async_trait]
+impl Channel for RtcChannel {
+    async fn send_text(&self, text: &str) -> Result<(), TransferError> {
+        self.0.send_text(text).await.map_err(|e| TransferError::Channel(e.to_string()))
+    }
+
+    async fn send_binary(&self, bytes: &[u8]) -> Result<(), TransferError> {
+        self.0.send_binary(bytes).await.map_err(|e| TransferError::Channel(e.to_string()))
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "pairdrop-probe", about = "Headless PairDrop peer and instance diagnostic")]
@@ -32,6 +48,22 @@ struct Args {
     /// Connect to peers rather than only listing them.
     #[arg(long)]
     dial: bool,
+
+    /// Files to send once connected. Implies --dial.
+    #[arg(long, value_name = "FILE", num_args = 1..)]
+    send: Vec<PathBuf>,
+
+    /// Send only to the peer whose name contains this, rather than to everyone.
+    #[arg(long, value_name = "NAME")]
+    to: Option<String>,
+
+    /// Where received files land.
+    #[arg(long, value_name = "DIR", default_value = "./pairdrop-received")]
+    out: PathBuf,
+
+    /// Send this as a text message once connected.
+    #[arg(long, value_name = "TEXT")]
+    text: Option<String>,
 
     /// Trust a self-signed certificate. Only for an instance on your own network.
     #[arg(long)]
@@ -50,8 +82,13 @@ struct Args {
 /// decides who creates the data channel and the order the verification hash is built in.
 struct Peer {
     session: Arc<RtcSession>,
+    transfer: Transfer,
     label: String,
     is_caller: bool,
+    /// Set once we've sent to this peer, so a reconnect doesn't send everything twice.
+    sent: bool,
+    /// Last percentage printed, so a burst of progress events doesn't repeat a line.
+    last_percent: u32,
 }
 
 #[tokio::main]
@@ -187,7 +224,7 @@ async fn handle_server_message(
 
                 // Peers already in the room when we arrive are the ones *we* call.
                 if args.dial && peer.rtc_supported && !peers.contains_key(&peer.id) {
-                    dial(peer.id.clone(), peer.name.best_label(), true, rtc_config, rtc_tx, peers).await;
+                    dial(peer.id.clone(), peer.name.best_label(), true, rtc_config, rtc_tx, peers, &args.out).await;
                 }
             }
         }
@@ -213,7 +250,7 @@ async fn handle_server_message(
 
             // No session yet means they called us, so we answer.
             if !peers.contains_key(&sender.id) {
-                dial(sender.id.clone(), sender.id.clone(), false, rtc_config, rtc_tx, peers).await;
+                dial(sender.id.clone(), sender.id.clone(), false, rtc_config, rtc_tx, peers, &args.out).await;
             }
             let Some(peer) = peers.get(&sender.id) else { return };
 
@@ -236,6 +273,7 @@ async fn handle_server_message(
 }
 
 /// Builds a session for one peer and starts forwarding its events.
+#[allow(clippy::too_many_arguments)]
 async fn dial(
     peer_id: String,
     label: String,
@@ -243,6 +281,7 @@ async fn dial(
     rtc_config: &RtcConfig,
     rtc_tx: &mpsc::UnboundedSender<(String, RtcEvent)>,
     peers: &mut HashMap<String, Peer>,
+    out: &std::path::Path,
 ) {
     let (session, mut receiver) = match RtcSession::new(rtc_config, is_caller).await {
         Ok(pair) => pair,
@@ -262,8 +301,14 @@ async fn dial(
         }
     });
 
+    let session = Arc::new(session);
+    let mut transfer = Transfer::new(Box::new(RtcChannel(Arc::clone(&session))), out.to_path_buf());
+    // A probe with no UI has no way to prompt, and being a willing receiver is the
+    // point of it.
+    transfer.auto_accept = true;
+
     println!("→ {label}: {} …", if is_caller { "calling" } else { "answering" });
-    peers.insert(peer_id, Peer { session: Arc::new(session), label, is_caller });
+    peers.insert(peer_id, Peer { session, transfer, label, is_caller, sent: false, last_percent: 0 });
 }
 
 async fn handle_rtc_event(
@@ -274,7 +319,7 @@ async fn handle_rtc_event(
     peers: &mut HashMap<String, Peer>,
     room: &RoomRef,
 ) {
-    let Some(peer) = peers.get(&peer_id) else { return };
+    let Some(peer) = peers.get_mut(&peer_id) else { return };
 
     match event {
         RtcEvent::LocalDescription(sdp) => {
@@ -295,33 +340,131 @@ async fn handle_rtc_event(
                 peer.label,
                 if peer.is_caller { "caller" } else { "answerer" }
             );
+
             // The server can't derive a useful name for a native client, so this is what
             // actually makes us show up with a real name on the other side.
-            let announce = TransferMessage::DisplayNameChanged(args.name.clone());
-            if let Err(error) = peer.session.send_text(&announce.to_json().to_string()).await {
+            if let Err(error) = peer.transfer.announce_name(&args.name).await {
                 println!("  couldn't announce our name: {error}");
+            }
+
+            if let Some(text) = &args.text {
+                if let Err(error) = peer.transfer.send_text(text).await {
+                    println!("  couldn't send the message: {error}");
+                }
+            }
+
+            maybe_send(peer, args).await;
+        }
+
+        RtcEvent::Text(text) => {
+            let mut events = Vec::new();
+            if let Err(error) = peer.transfer.on_text(&text, &mut events).await {
+                println!("✗ {} transfer error: {error}", peer.label);
+            }
+            let label = peer.label.clone();
+            report_transfer(&label, &mut peer.last_percent, &events);
+
+            // A peer that renames itself should be shown under the new name — and
+            // `--to` matches on that name, which only arrives after the channel opens.
+            // Retrying the send here is what makes name-based targeting work at all.
+            if let Some(name) = events.iter().find_map(|e| match e {
+                TransferEvent::PeerNameChanged(name) => Some(name.clone()),
+                _ => None,
+            }) {
+                if let Some(peer) = peers.get_mut(&peer_id) {
+                    peer.label = name;
+                    maybe_send(peer, args).await;
+                }
             }
         }
 
-        RtcEvent::Text(text) => match TransferMessage::parse(text.as_bytes()) {
-            Some(message) => println!("← {} {message:?}", peer.label),
-            None => println!("← {} (unparsed) {text}", peer.label),
-        },
-
         RtcEvent::Binary(bytes) => {
-            println!("← {} {} bytes", peer.label, bytes.len());
+            let mut events = Vec::new();
+            if let Err(error) = peer.transfer.on_binary(&bytes, &mut events).await {
+                println!("✗ {} transfer error: {error}", peer.label);
+            }
+            report_transfer(&peer.label, &mut peer.last_percent, &events);
         }
 
         RtcEvent::Failed => {
             println!("✗ {} — ICE failed, no path between us", peer.label);
-            if let Some(peer) = peers.remove(&peer_id) {
+            if let Some(mut peer) = peers.remove(&peer_id) {
+                peer.transfer.reset();
                 peer.session.close().await;
             }
         }
 
         RtcEvent::Closed => {
             println!("· {} closed", peer.label);
-            peers.remove(&peer_id);
+            if let Some(mut peer) = peers.remove(&peer_id) {
+                peer.transfer.reset();
+            }
+        }
+    }
+}
+
+/// Sends the queued files if this is the peer we were asked for, at most once.
+///
+/// Called both when the channel opens and when the peer announces its name, because
+/// `--to` matches the announced name and that arrives strictly after the channel is up.
+async fn maybe_send(peer: &mut Peer, args: &Args) {
+    if args.send.is_empty() || peer.sent {
+        return;
+    }
+    let wanted = args
+        .to
+        .as_ref()
+        .is_none_or(|want| peer.label.to_lowercase().contains(&want.to_lowercase()));
+    if !wanted {
+        return;
+    }
+
+    peer.sent = true;
+    println!("→ {} sending {} file(s) …", peer.label, args.send.len());
+    let mut events = Vec::new();
+    match peer.transfer.send_files(&args.send, &mut events).await {
+        Ok(skipped) if !skipped.is_empty() => {
+            println!("  skipped {} (empty files and folders)", skipped.join(", "));
+        }
+        Ok(_) => {}
+        Err(error) => println!("  {error}"),
+    }
+    report_transfer(&peer.label, &mut peer.last_percent, &events);
+}
+
+/// Prints the interesting transfer events, skipping the progress firehose except at
+/// round percentages.
+fn report_transfer(label: &str, last_percent: &mut u32, events: &[TransferEvent]) {
+    for event in events {
+        match event {
+            TransferEvent::RequestReceived(request) => {
+                println!("← {label} wants to send {} file(s)", request.header.len());
+            }
+            TransferEvent::SendProgress(p) | TransferEvent::ReceiveProgress(p) => {
+                let percent = (p * 100.0).round() as u32;
+                if percent % 25 == 0 && percent > *last_percent {
+                    *last_percent = percent;
+                    println!("  {label} {percent}%");
+                }
+            }
+            TransferEvent::FilesReceived(files) => {
+                *last_percent = 0;
+                println!("✓ received {} file(s) from {label}:", files.len());
+                for file in files {
+                    let size = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+                    println!("    {} ({size} bytes)", file.display());
+                }
+            }
+            TransferEvent::TextReceived(text) => println!("← {label}: {text}"),
+            TransferEvent::SendingFinished { files } => {
+                *last_percent = 0;
+                println!("✓ sent {files} file(s) to {label}");
+            }
+            TransferEvent::Declined { reason } => {
+                println!("✗ {label} declined{}", reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default());
+            }
+            TransferEvent::Failed(message) => println!("✗ {label}: {message}"),
+            TransferEvent::PeerNameChanged(name) => println!("· {label} is called {name:?}"),
         }
     }
 }

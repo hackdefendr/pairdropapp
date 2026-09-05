@@ -31,12 +31,12 @@ crates/
     signaling       Server frames in and out
     transfer        Data-channel control frames
   pairdrop-net/     WebSocket transport: connect, keepalive, reconnect, TLS
-  pairdrop-rtc/     One peer connection and its data channel
-  pairdrop-cli/     `pairdrop-probe` — headless peer and instance diagnostic
+  pairdrop-rtc/       One peer connection and its data channel
+  pairdrop-transfer/  The transfer state machine, and file chunking on both sides
+  pairdrop-cli/       `pairdrop-probe` — headless peer and instance diagnostic
 ```
 
-Still to come: the transfer state machine, secret storage via the Secret Service, and the
-GTK4 app.
+Still to come: secret storage via the Secret Service, pairing, and the GTK4 app.
 
 ## Building
 
@@ -62,17 +62,22 @@ tray or drag-and-drop, which are the parts most worth watching.
 ## `pairdrop-probe`
 
 A headless peer: it connects, joins the IP room, and with `--dial` opens a WebRTC data
-channel to every peer it finds, reporting the verification hash for each.
+channel to every peer it finds. It accepts every incoming transfer, which is what makes
+it useful as a test receiver.
 
 ```
 Room 127.0.0.1 (ip): 1 peer(s)
   • Blue Quokka [1ac6680e-…]
 → Blue Quokka: calling …
-✓ Blue Quokka connected as caller — verification 2588421071560198
-← Blue Quokka DisplayNameChanged("Jeffrey's MacBook Pro")
+✓ Blush Lemming connected as caller — verification 4183170496344325
+· Blush Lemming is called "Rust Receiver"
+→ Rust Receiver sending 2 file(s) …
+  Rust Receiver 100%
+✓ sent 2 file(s) to Rust Receiver
 ```
 
-File transfers aren't wired up yet — that's the state machine on top of the channel.
+Two probes against a real instance move files byte-for-byte, verified by SHA-256 over a
+2.5 MB file spanning three partitions.
 
 It doubles as an instance diagnostic. If peers show "couldn't connect", this says why:
 
@@ -82,7 +87,9 @@ ICE:      1 STUN, 0 TURN; ws fallback off
     have no path. Add a TURN server, or run the instance with --include-ws-fallback.
 ```
 
-`--dial` to connect rather than only list, `--name` for the name peers see,
+`--send FILE…` with `--to NAME` to transfer, `--text` to send a message, `--out DIR` for
+where received files land, `--dial` to connect rather than only list,
+`--name` for the name peers see,
 `--allow-untrusted-tls` for a self-signed certificate, `--quit-after N` to exit on a
 timer, `--max-attempts N` to stop retrying and exit non-zero.
 

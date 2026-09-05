@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pairdrop-proto", "crates/pairdrop-net", "crates/pairdrop-rtc", "crates/pairdrop-cli"]
+members = ["crates/pairdrop-proto", "crates/pairdrop-net", "crates/pairdrop-rtc", "crates/pairdrop-transfer", "crates/pairdrop-cli"]
 
 [workspace.package]
 version = "0.1.0"

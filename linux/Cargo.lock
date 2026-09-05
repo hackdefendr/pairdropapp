@@ -1580,10 +1580,12 @@ name = "pairdrop-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "pairdrop-net",
  "pairdrop-proto",
  "pairdrop-rtc",
+ "pairdrop-transfer",
  "rustls",
  "tokio",
 ]
@@ -1625,6 +1627,17 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "webrtc",
+]
+
+[[package]]
+name = "pairdrop-transfer"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "pairdrop-proto",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
