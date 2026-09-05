@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.pairdrop.Linux</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>PairDrop</name>
+  <summary>Send files and text to nearby devices</summary>
+
+  <description>
+    <p>
+      A native client for PairDrop, the self-hosted file transfer service. Devices on the
+      same network find each other automatically; drop files on one and they are there.
+      Transfers go peer-to-peer over a WebRTC data channel and never touch the server.
+    </p>
+    <p>
+      Devices on different networks can be paired with a six-digit key, after which they
+      stay visible from anywhere.
+    </p>
+    <p>
+      PairDrop needs a server to connect through — your own instance, or a public one.
+      Nothing is configured by default.
+    </p>
+  </description>
+
+  <developer id="io.github.hackdefendr">
+    <name>hackdefendr</name>
+  </developer>
+
+  <launchable type="desktop-id">app.pairdrop.Linux.desktop</launchable>
+  <url type="homepage">https://github.com/hackdefendr/pairdropapp</url>
+  <url type="bugtracker">https://github.com/hackdefendr/pairdropapp/issues</url>
+
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-09-05">
+      <description>
+        <p>First Linux release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

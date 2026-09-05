@@ -9,4 +9,4 @@ Terminal=false
 Categories=Network;FileTransfer;
 Keywords=share;send;transfer;airdrop;nearby;
 StartupNotify=true
-StartupWMClass=pairdrop
+StartupWMClass=app.pairdrop.Linux

@@ -46,6 +46,30 @@ Still to come: a tray icon where the desktop has one, and drag-and-drop of selec
 
 ## Installing
 
+### Flatpak
+
+Brings its own GTK and libadwaita, so it doesn't care what the distribution ships:
+
+```sh
+cd linux
+./flatpak/build.sh              # build and install for the current user
+./flatpak/build.sh --bundle     # also writes pairdrop.flatpak, a single shareable file
+flatpak run app.pairdrop.Linux
+```
+
+The first build downloads the GNOME runtime and SDK — a couple of gigabytes — and takes
+a while. Later builds reuse them.
+
+Dependencies are pre-declared in `flatpak/cargo-sources.json` because the build sandbox
+has no network. Regenerate it whenever `Cargo.lock` changes, using
+[flatpak-builder-tools](https://github.com/flatpak/flatpak-builder-tools):
+
+```sh
+python3 flatpak-cargo-generator.py Cargo.lock -o flatpak/cargo-sources.json
+```
+
+### From source
+
 ```sh
 cd linux
 ./install.sh                    # → ~/.local, no root needed
@@ -62,6 +86,20 @@ Needs GTK 4 and libadwaita development packages:
 
 On first launch, open the menu → Preferences and enter your instance's address. Nothing
 is configured by default.
+
+### What the Flatpak asks for
+
+| Permission | Why |
+|---|---|
+| `--share=network` | The signalling WebSocket, and the UDP sockets WebRTC binds for ICE |
+| `--filesystem=xdg-download` | Received files are written without user interaction, so there is no portal request to hang them on |
+| `--talk-name=org.freedesktop.secrets` | Pairing secrets. Without it the app still runs; pairings just don't outlive the session |
+
+Files you *send* go through the file portal, so the app never needs blanket read access.
+
+Choosing a download folder outside `~/Downloads` works for the session, but the portal
+path it produces isn't stable across restarts — so under Flatpak, leaving it at the
+default is the reliable choice. Building from source has no such limit.
 
 ## Building
 

@@ -1,0 +1,68 @@
+# Flatpak manifest for PairDrop.
+#
+# Build and install locally:
+#   cd linux && ./flatpak/build.sh
+#
+# Dependencies are pre-declared in cargo-sources.json because the build sandbox has no
+# network. Regenerate it whenever Cargo.lock changes:
+#   python3 flatpak-cargo-generator.py Cargo.lock -o flatpak/cargo-sources.json
+# (from https://github.com/flatpak/flatpak-builder-tools)
+
+id: app.pairdrop.Linux
+runtime: org.gnome.Platform
+runtime-version: "50"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: pairdrop
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    # Vendored crates are unpacked here by the cargo-sources entries.
+    CARGO_HOME: /run/build/pairdrop/cargo
+
+finish-args:
+  # The signalling WebSocket, plus the UDP sockets WebRTC binds for ICE.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+
+  # Received files are written directly rather than through a portal, because a transfer
+  # arrives without any user interaction to hang a portal request on.
+  - --filesystem=xdg-download
+
+  # Pairing secrets. Without this the app still runs, but pairings last only for the
+  # session and it says so on startup.
+  - --talk-name=org.freedesktop.secrets
+
+modules:
+  - name: pairdrop
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ..
+        # Without this, flatpak-builder copies the whole workspace into the sandbox —
+        # including a multi-gigabyte target/ that the offline build ignores anyway.
+        skip:
+          - target
+          - build-dir
+          - .flatpak-repo
+          - .flatpak-builder
+          - pairdrop.flatpak
+      - cargo-sources.json
+    build-options:
+      env:
+        # Offline and reproducible: everything comes from cargo-sources.json.
+        CARGO_NET_OFFLINE: "true"
+    build-commands:
+      - cargo --offline build --release --package pairdrop-gtk
+      - install -Dm755 target/release/pairdrop /app/bin/pairdrop
+      - install -Dm644 crates/pairdrop-gtk/data/app.pairdrop.Linux.desktop
+          /app/share/applications/app.pairdrop.Linux.desktop
+      - install -Dm644 crates/pairdrop-gtk/data/icons/app.pairdrop.Linux.svg
+          /app/share/icons/hicolor/scalable/apps/app.pairdrop.Linux.svg
+      - install -Dm644 crates/pairdrop-gtk/data/app.pairdrop.Linux.metainfo.xml
+          /app/share/metainfo/app.pairdrop.Linux.metainfo.xml
