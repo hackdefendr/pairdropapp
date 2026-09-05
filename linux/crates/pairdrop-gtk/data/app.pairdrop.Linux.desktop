@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=PairDrop
+GenericName=File Transfer
+Comment=Send files and text to nearby devices
+Exec=pairdrop
+Icon=app.pairdrop.Linux
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=share;send;transfer;airdrop;nearby;
+StartupNotify=true
+StartupWMClass=pairdrop

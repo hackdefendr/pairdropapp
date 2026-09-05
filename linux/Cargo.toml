@@ -1,6 +1,28 @@
 [workspace]
 resolver = "2"
-members = ["crates/pairdrop-proto", "crates/pairdrop-net", "crates/pairdrop-rtc", "crates/pairdrop-transfer", "crates/pairdrop-pairing", "crates/pairdrop-cli"]
+members = [
+    "crates/pairdrop-proto",
+    "crates/pairdrop-net",
+    "crates/pairdrop-rtc",
+    "crates/pairdrop-transfer",
+    "crates/pairdrop-pairing",
+    "crates/pairdrop-client",
+    "crates/pairdrop-gtk",
+    "crates/pairdrop-cli",
+]
+
+# The GUI needs GTK 4 and libadwaita headers, which the macOS machine this is developed
+# on doesn't have — so a bare `cargo test` skips it and everything else still builds
+# anywhere. Build the app explicitly with `-p pairdrop-gtk`, or via ./install.sh.
+default-members = [
+    "crates/pairdrop-proto",
+    "crates/pairdrop-net",
+    "crates/pairdrop-rtc",
+    "crates/pairdrop-transfer",
+    "crates/pairdrop-pairing",
+    "crates/pairdrop-client",
+    "crates/pairdrop-cli",
+]
 
 [workspace.package]
 version = "0.1.0"

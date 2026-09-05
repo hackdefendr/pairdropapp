@@ -4,7 +4,9 @@
 //! send to the device. It does not belong in a config file, so the real implementation
 //! puts it in the platform credential store — Secret Service on Linux, Keychain on macOS.
 
+use std::sync::mpsc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -141,12 +143,44 @@ impl SecretStore for MemoryStore {
     }
 }
 
+/// How long to wait for the credential store to answer. Generous for a call that is
+/// local D-Bus or a direct Keychain query, and short enough not to stall a launch.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// The platform store when one is available, memory otherwise. The error is returned
 /// alongside so the caller can tell the user why pairings won't persist.
 pub fn best_available() -> (Box<dyn SecretStore>, Option<StoreError>) {
-    match KeyringStore::new() {
-        Ok(store) => (Box::new(store), None),
-        Err(error) => (Box::new(MemoryStore::new()), Some(error)),
+    best_available_within(PROBE_TIMEOUT)
+}
+
+/// Probing happens on a throwaway thread because it can *hang*, not merely fail.
+///
+/// With a D-Bus session bus running but no Secret Service provider — any Linux session
+/// without gnome-keyring or KWallet — the zbus backend blocks indefinitely instead of
+/// returning an error. Calling it inline froze the GTK app before its first frame.
+///
+/// If the probe times out the thread is left parked rather than killed; there is no way
+/// to cancel a blocked D-Bus call, and one idle thread is a better outcome than a
+/// window that never appears.
+pub fn best_available_within(timeout: Duration) -> (Box<dyn SecretStore>, Option<StoreError>) {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("pairdrop-keyring-probe".into())
+        .spawn(move || {
+            let _ = tx.send(KeyringStore::new());
+        })
+        .ok();
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(store)) => (Box::new(store), None),
+        Ok(Err(error)) => (Box::new(MemoryStore::new()), Some(error)),
+        Err(_) => (
+            Box::new(MemoryStore::new()),
+            Some(StoreError::Unavailable(format!(
+                "the desktop keyring did not respond within {}s",
+                timeout.as_secs()
+            ))),
+        ),
     }
 }
 
@@ -182,6 +216,23 @@ mod tests {
         let devices: Vec<PairedDevice> = serde_json::from_str(json).unwrap();
         assert_eq!(devices[0].display_name, "Laptop");
         assert!(!devices[0].auto_accept);
+    }
+
+    /// The probe must not be able to stall a caller. This is the regression test for a
+    /// hang that froze the GTK app before its first frame on a session with a D-Bus bus
+    /// but no Secret Service.
+    #[test]
+    fn probing_gives_up_rather_than_hanging() {
+        let started = std::time::Instant::now();
+        let (store, problem) = best_available_within(Duration::from_millis(1));
+        let elapsed = started.elapsed();
+
+        assert!(elapsed < Duration::from_secs(2), "the probe took {elapsed:?}");
+        // A 1ms budget almost certainly expires, but a very fast backend may answer in
+        // time — either outcome is fine as long as it *returned*.
+        if problem.is_some() {
+            assert!(store.description().contains("memory"));
+        }
     }
 
     #[test]

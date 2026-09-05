@@ -1,0 +1,19 @@
+[package]
+name = "pairdrop-gtk"
+description = "PairDrop for Linux — a GTK4/libadwaita client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pairdrop"
+path = "src/main.rs"
+
+[dependencies]
+pairdrop-client = { path = "../pairdrop-client" }
+pairdrop-pairing = { path = "../pairdrop-pairing" }
+gtk = { package = "gtk4", version = "0.10", features = ["v4_10"] }
+adw = { package = "libadwaita", version = "0.8", features = ["v1_4"] }
+async-channel = "2"

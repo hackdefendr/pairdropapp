@@ -1,0 +1,21 @@
+[package]
+name = "pairdrop-client"
+description = "The PairDrop client engine: signaling, peers, transfers and pairing, without a UI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pairdrop-proto = { path = "../pairdrop-proto" }
+pairdrop-net = { path = "../pairdrop-net" }
+pairdrop-rtc = { path = "../pairdrop-rtc" }
+pairdrop-transfer = { path = "../pairdrop-transfer" }
+pairdrop-pairing = { path = "../pairdrop-pairing" }
+serde.workspace = true
+serde_json.workspace = true
+async-channel = "2"
+async-trait = "0.1"
+rustls = "0.23"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }

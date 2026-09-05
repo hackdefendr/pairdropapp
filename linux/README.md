@@ -1,7 +1,7 @@
 # PairDrop for Linux
 
 A GTK4/libadwaita client for [PairDrop](https://github.com/schlagmichdoch/PairDrop),
-in Rust. **In progress** — the protocol layer is done and tested; there is no app yet.
+in Rust. Drop files on a nearby device and they're there.
 
 ## Why a rewrite rather than a port
 
@@ -34,19 +34,46 @@ crates/
   pairdrop-rtc/       One peer connection and its data channel
   pairdrop-transfer/  The transfer state machine, and file chunking on both sides
   pairdrop-pairing/   Six-digit pairing, and secrets in the platform credential store
+  pairdrop-client/    The engine: signaling, peers, transfers and pairing, no UI
+  pairdrop-gtk/       The app — GTK4 and libadwaita
   pairdrop-cli/       `pairdrop-probe` — headless peer and instance diagnostic
 ```
 
-Still to come: the GTK4 app.
+The engine runs a tokio runtime on its own thread and talks to the UI over channels, so
+the GTK main loop never waits on the network.
 
-## Building
+Still to come: a tray icon where the desktop has one, and drag-and-drop of selected text.
 
-Everything so far is pure Rust with rustls rather than the platform TLS stack, so it
-builds and tests **on any platform** — including the Mac this is being developed on:
+## Installing
 
 ```sh
 cd linux
-cargo test
+./install.sh                    # → ~/.local, no root needed
+./install.sh --prefix /usr/local
+```
+
+Needs GTK 4 and libadwaita development packages:
+
+| | |
+|---|---|
+| Debian, Ubuntu, Kali | `sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev` |
+| Fedora | `sudo dnf install gcc pkgconf gtk4-devel libadwaita-devel` |
+| Arch | `sudo pacman -S base-devel gtk4 libadwaita` |
+
+On first launch, open the menu → Preferences and enter your instance's address. Nothing
+is configured by default.
+
+## Building
+
+Everything except the GUI is pure Rust with rustls rather than the platform TLS stack, so
+it builds and tests **on any platform** — including the macOS machine this was developed
+on. The GTK crate is excluded from the workspace's `default-members` for exactly that
+reason:
+
+```sh
+cd linux
+cargo test                      # everything but the GUI
+cargo build -p pairdrop-gtk     # the GUI, on Linux
 cargo run --bin pairdrop-probe -- https://drop.example.com --quit-after 20
 ```
 
@@ -70,9 +97,9 @@ the user's keyring. Run them deliberately on a desktop session:
 cargo test -p pairdrop-pairing --test keyring -- --ignored --test-threads=1
 ```
 
-The UI, when it lands, will need a real desktop session — a container has no display
-server, no D-Bus session bus, and no tray host, and X11 forwarding wouldn't exercise the
-tray or drag-and-drop, which are the parts most worth watching.
+The GUI needs a real display. For automated checks it runs headless under Xvfb, which is
+enough to drive it with `xdotool` and screenshot the result — that is how the transfer
+prompt and the pairing flow below were verified.
 
 ## `pairdrop-probe`
 
@@ -114,9 +141,20 @@ timer, `--max-attempts N` to stop retrying and exit non-zero.
 macOS puts this in the menu bar. That doesn't translate: GNOME removed the system tray in
 2017, and `StatusNotifierItem` needs a shell extension there.
 
-So the primary surface is a **small window**, with a tray icon *when the desktop provides
-one* — KDE Plasma, Cinnamon, XFCE, or GNOME with AppIndicator installed. The app has to be
-fully usable without it. Targets are GNOME and KDE Plasma.
+So the primary surface is a **small window**: a list of nearby devices, each one a drop
+target. Click a device to pick files instead. Incoming transfers prompt before anything
+touches the disk, unless the sender is a paired device you've marked trusted.
+
+A tray icon is still to come, and optional by design — the app must stay fully usable
+without one. Targets are GNOME and KDE Plasma; development happened on Kali's XFCE.
+
+### A note on GTK panics
+
+A panic inside a GTK callback crosses the C boundary and **aborts** rather than unwinding,
+so a `RefCell` misuse is fatal rather than recoverable. One shipped that way during
+development — `ui.paired_devices.borrow().clone()` passed straight into a function that
+takes `borrow_mut()`, where the temporary borrow outlives the call — and it killed the
+process the first time Preferences was opened. Bind such borrows to a local first.
 
 ## Pairing
 
