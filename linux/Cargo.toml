@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/pairdrop-proto", "crates/pairdrop-net", "crates/pairdrop-cli"]
+members = ["crates/pairdrop-proto", "crates/pairdrop-net", "crates/pairdrop-rtc", "crates/pairdrop-cli"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-# Ubuntu 24.04 LTS and Debian 13 ship older toolchains than rustup does; keeping the
-# floor low means the app builds from distro packages, not just from rustup.
-rust-version = "1.75"
+# Forced up by webrtc 0.20, which is edition 2024. That rules out Ubuntu 24.04's
+# packaged rustc, so distro builds need the toolchain from rustup or a backport.
+rust-version = "1.85"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/hackdefendr/pairdropapp"
 

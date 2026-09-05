@@ -31,11 +31,12 @@ crates/
     signaling       Server frames in and out
     transfer        Data-channel control frames
   pairdrop-net/     WebSocket transport: connect, keepalive, reconnect, TLS
+  pairdrop-rtc/     One peer connection and its data channel
   pairdrop-cli/     `pairdrop-probe` — headless peer and instance diagnostic
 ```
 
-Still to come: the WebRTC data channel, the transfer state machine, secret storage via the
-Secret Service, and the GTK4 app.
+Still to come: the transfer state machine, secret storage via the Secret Service, and the
+GTK4 app.
 
 ## Building
 
@@ -54,10 +55,24 @@ Verified building and running on Linux too:
 docker run --rm -v "$PWD":/w -w /w rust:1.94-slim cargo test
 ```
 
+The UI, when it lands, will need a real desktop session — a container has no display
+server, no D-Bus session bus, and no tray host, and X11 forwarding wouldn't exercise the
+tray or drag-and-drop, which are the parts most worth watching.
+
 ## `pairdrop-probe`
 
-A headless peer: it connects, joins the IP room, and reports what the server says.
-Transfers aren't wired up yet — that needs the data channel.
+A headless peer: it connects, joins the IP room, and with `--dial` opens a WebRTC data
+channel to every peer it finds, reporting the verification hash for each.
+
+```
+Room 127.0.0.1 (ip): 1 peer(s)
+  • Blue Quokka [1ac6680e-…]
+→ Blue Quokka: calling …
+✓ Blue Quokka connected as caller — verification 2588421071560198
+← Blue Quokka DisplayNameChanged("Jeffrey's MacBook Pro")
+```
+
+File transfers aren't wired up yet — that's the state machine on top of the channel.
 
 It doubles as an instance diagnostic. If peers show "couldn't connect", this says why:
 
@@ -67,12 +82,10 @@ ICE:      1 STUN, 0 TURN; ws fallback off
     have no path. Add a TURN server, or run the instance with --include-ws-fallback.
 ```
 
+`--dial` to connect rather than only list, `--name` for the name peers see,
 `--allow-untrusted-tls` for a self-signed certificate, `--quit-after N` to exit on a
 timer, `--max-attempts N` to stop retrying and exit non-zero.
 
-The UI itself needs a real desktop session — a container has no display server, no D-Bus
-session bus, and no tray host, and X11 forwarding wouldn't exercise the tray or
-drag-and-drop, which are the parts most worth watching.
 
 ## App shape
 
@@ -85,7 +98,8 @@ fully usable without it. Targets are GNOME and KDE Plasma.
 
 ## Notes on the protocol
 
-Two things the Swift port learned the hard way, both load-bearing:
+Details that are load-bearing for interop, each found by a test rather than by
+reading the spec:
 
 - **`cyrb53` walks UTF-16 code units**, matching JavaScript's `charCodeAt`. Iterating
   Unicode scalars gives a different verification code, but only for strings containing
@@ -100,6 +114,14 @@ Two things the Swift port learned the hard way, both load-bearing:
   `sdpMlineIndex`, which silently never matches, and an ICE candidate that loses its
   m-line index is dropped by some peers and accepted by others. Renamed explicitly, with
   a test on both the parse and the serialize side.
+- **A 64,000-byte chunk is close to the ceiling.** SCTP negotiates a 65,536-byte maximum
+  message size by default, so PairDrop's chunks fit with 1,536 bytes to spare. The
+  `webrtc` crate's own docs claim a 16,384-byte limit on received messages; that is stale,
+  and `two_sessions_connect_and_exchange_data` sends a full chunk to prove it.
+- **Both peers must derive the same connection hash.** It is `cyrb53` of the two DTLS
+  fingerprints concatenated *caller's first*, so the two ends have to agree on who
+  called. Reverse it on one side and the codes differ, which reads to a user as a failed
+  verification rather than as a bug.
 - **The server can't name a native client.** It builds the device label as
   `os.name + " " + (device.model ?? browser.name)` with no guard for the undefined case,
   and ua-parser-js has no generic-browser fallback — so any native client reads as

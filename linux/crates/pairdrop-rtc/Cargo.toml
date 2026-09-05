@@ -1,0 +1,19 @@
+[package]
+name = "pairdrop-rtc"
+description = "WebRTC data channel for PairDrop, interoperable with the web client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+bytes = "1.12.1"
+pairdrop-proto = { path = "../pairdrop-proto" }
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["sync", "rt", "macros"] }
+webrtc = "0.20.5"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
