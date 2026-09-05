@@ -1,0 +1,16 @@
+[package]
+name = "pairdrop-proto"
+description = "PairDrop wire protocol: signaling frames, data-channel messages, and address handling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Deliberately free of I/O, async, and platform dependencies, so it builds and tests
+# anywhere — including on the macOS machine this was developed on.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+url.workspace = true
