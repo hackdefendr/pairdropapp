@@ -75,13 +75,19 @@ install_name_tool -add_rpath '@executable_path/../Frameworks' \
 # Set SIGN_IDENTITY to a Developer ID to produce a distributable, notarizable build.
 # The default is an ad-hoc signature, which is fine locally.
 IDENTITY="${SIGN_IDENTITY:--}"
-SIGN_FLAGS=(--force --sign "$IDENTITY" --timestamp=none)
+SIGN_FLAGS=(--force --sign "$IDENTITY")
 
-if [ "$IDENTITY" != "-" ]; then
+if [ "$IDENTITY" = "-" ]; then
+    # Ad-hoc signatures can't be timestamped, and skipping it keeps offline builds fast.
+    SIGN_FLAGS+=(--timestamp=none)
+else
     # The hardened runtime requires every embedded library to carry the *same* Team ID.
     # Ad-hoc signatures have none, so dyld rejects the framework — enable it only for
     # a real identity.
-    SIGN_FLAGS+=(--options runtime)
+    #
+    # The secure timestamp is not optional here: notarization rejects a signature
+    # without one ("The signature does not include a secure timestamp").
+    SIGN_FLAGS+=(--options runtime --timestamp)
 fi
 
 echo "==> Signing as ${IDENTITY}"
