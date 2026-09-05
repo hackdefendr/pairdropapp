@@ -1,5 +1,14 @@
 # Cutting a release
 
+## Tags
+
+`v0.1.0` was cut before there was more than one client, and means macOS. Now that the
+repository holds several, tags are platform-prefixed — `linux-v0.1.0` — so it's obvious
+what a release contains and the platforms can move at their own pace. The macOS
+`.github/workflows/release.yml` triggers on `v*` only, so a prefixed tag never fires it.
+
+# macOS
+
 ## 1. Set the version
 
 `macos/Resources/Info.plist` holds the version that a source build gets.
@@ -69,7 +78,7 @@ NOTARY_ISSUER=12345678-1234-1234-1234-123456789012 \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./package.sh 0.1.0
 ```
 
-## Signed builds in CI
+### Signed builds in CI
 
 `.github/workflows/release.yml` signs and notarizes when these repository secrets exist,
 and quietly falls back to an ad-hoc build when they don't:
@@ -142,3 +151,50 @@ publishing by hand, and re-enable it once you're happy.
 Download the DMG from the release page on a machine that has never run the app, and check
 it opens. That is the only way to see what a first-time user actually gets, quarantine
 and all.
+
+# Linux
+
+## 1. Build the bundle
+
+Built on an x86_64 Linux machine — the Flatpak bundle is architecture-specific and there
+is no cross-build.
+
+```sh
+cd linux
+./flatpak/build.sh --bundle
+```
+
+That writes `linux/pairdrop.flatpak`. Rename it with the version and architecture, and
+checksum it:
+
+```sh
+mkdir -p dist
+mv pairdrop.flatpak dist/PairDrop-0.1.0-linux-x86_64.flatpak
+( cd dist && shasum -a 256 PairDrop-*.flatpak > SHA256SUMS )
+```
+
+## 2. Publish
+
+Prefix the tag, so it's clear which client the release is for:
+
+```sh
+gh release create linux-v0.1.0 \
+    linux/dist/PairDrop-0.1.0-linux-x86_64.flatpak \
+    linux/dist/SHA256SUMS \
+    --title "PairDrop for Linux 0.1.0" \
+    --notes-file docs/release-notes/linux-v0.1.0.md
+```
+
+## 3. Verify
+
+**Check the bundle installs before publishing it**, because a bundle that doesn't install is
+worse than no release:
+
+```sh
+flatpak uninstall --user -y app.pairdrop.Linux
+flatpak install --user -y --bundle dist/PairDrop-0.1.0-linux-x86_64.flatpak
+flatpak run app.pairdrop.Linux
+```
+
+Regenerate `flatpak/cargo-sources.json` whenever `Cargo.lock` changes, or the build will
+compile the versions from whenever it was last generated.
