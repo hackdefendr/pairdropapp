@@ -84,12 +84,15 @@ impl Fixture {
         self.dir.join("in")
     }
 
-    /// Relays frames between the two until both go quiet.
-    async fn run(&mut self) {
-        loop {
-            let idle = tokio::time::sleep(Duration::from_millis(400));
-            tokio::pin!(idle);
+    /// Relays frames until the side we're waiting on reaches a terminal event.
+    ///
+    /// Deliberately not an idle timeout: disk reads happen on a blocking pool, and under
+    /// parallel test load a pause longer than any fixed idle window is normal. Stopping
+    /// on "nothing arrived recently" made this flaky in exactly that situation.
+    async fn run_until(&mut self, stop: Stop) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
 
+        while !self.reached(stop) {
             tokio::select! {
                 Some(frame) = self.from_sender.recv() => {
                     self.sent_frames.push(label(&frame));
@@ -98,10 +101,48 @@ impl Fixture {
                 Some(frame) = self.from_receiver.recv() => {
                     deliver(&mut self.sender, frame, &mut self.sender_events).await;
                 }
-                _ = &mut idle => break,
+                _ = tokio::time::sleep_until(deadline) => {
+                    panic!(
+                        "timed out waiting for {stop:?}\n  sender: {:?}\n  receiver: {:?}",
+                        self.sender_events, self.receiver_events
+                    );
+                }
             }
         }
     }
+
+    /// Waits for the sender to finish, which for a file transfer happens strictly after
+    /// the receiver has saved everything.
+    async fn run(&mut self) {
+        self.run_until(Stop::SenderDone).await;
+    }
+
+    fn reached(&self, stop: Stop) -> bool {
+        match stop {
+            Stop::SenderDone => self.sender_events.iter().any(|e| {
+                matches!(
+                    e,
+                    TransferEvent::SendingFinished { .. }
+                        | TransferEvent::Declined { .. }
+                        | TransferEvent::Failed(_)
+                )
+            }),
+            Stop::ReceiverDone => self.receiver_events.iter().any(|e| {
+                matches!(
+                    e,
+                    TransferEvent::FilesReceived(_)
+                        | TransferEvent::TextReceived(_)
+                        | TransferEvent::Failed(_)
+                )
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Stop {
+    SenderDone,
+    ReceiverDone,
 }
 
 impl Drop for Fixture {
@@ -424,7 +465,7 @@ async fn text_round_trips_and_is_acknowledged() {
     let mut fixture = Fixture::new("text");
 
     fixture.sender.send_text("héllo 🌍").await.unwrap();
-    fixture.run().await;
+    fixture.run_until(Stop::ReceiverDone).await;
 
     assert!(fixture
         .receiver_events

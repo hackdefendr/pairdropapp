@@ -21,3 +21,4 @@ rustls = "0.23.43"
 pairdrop-rtc = { version = "0.1.0", path = "../pairdrop-rtc" }
 pairdrop-transfer = { version = "0.1.0", path = "../pairdrop-transfer" }
 async-trait = "0.1.92"
+pairdrop-pairing = { version = "0.1.0", path = "../pairdrop-pairing" }

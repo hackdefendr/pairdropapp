@@ -16,6 +16,7 @@ use pairdrop_net::{connect, SignalingConfig, SignalingEvent, SignalingHandle, Si
 use pairdrop_proto::{
     ClientMessage, RoomRef, RoomType, RtcConfig, ServerEndpoint, ServerMessage, WsConfig,
 };
+use pairdrop_pairing::{best_available, Pairing, PairingEvent};
 use pairdrop_rtc::{RtcEvent, RtcSession};
 use pairdrop_transfer::{Channel, Transfer, TransferError, TransferEvent};
 use tokio::sync::mpsc;
@@ -65,6 +66,18 @@ struct Args {
     #[arg(long, value_name = "TEXT")]
     text: Option<String>,
 
+    /// Create a pairing key for another device to enter.
+    #[arg(long, conflicts_with = "join")]
+    pair: bool,
+
+    /// Enter the six-digit key shown on another device.
+    #[arg(long, value_name = "KEY")]
+    join: Option<String>,
+
+    /// Forget every paired device and tell the server to tear the rooms down.
+    #[arg(long)]
+    unpair_all: bool,
+
     /// Trust a self-signed certificate. Only for an instance on your own network.
     #[arg(long)]
     allow_untrusted_tls: bool,
@@ -109,12 +122,31 @@ async fn main() -> Result<()> {
     config.allow_untrusted_tls = args.allow_untrusted_tls;
     config.max_attempts = args.max_attempts;
 
+    let (store, storage_problem) = best_available();
+    let mut pairing = Pairing::new(store);
+    println!("Secrets:  {}", pairing.store_description());
+    if let Some(problem) = storage_problem {
+        println!("  ⚠ {problem}");
+        println!("    Pairings will work but won't survive a restart. On Linux this");
+        println!("    usually means no gnome-keyring or KWallet is running.");
+    }
+    if !pairing.devices().is_empty() {
+        println!("Paired:   {} device(s)", pairing.devices().len());
+        for device in pairing.devices() {
+            let auto = if device.auto_accept { " (auto-accept)" } else { "" };
+            println!("  • {}{auto}", device.display_name);
+        }
+    }
+
     let (handle, mut events) = connect(config);
 
     // Every peer session funnels its events here, tagged with whose they are.
     let (rtc_tx, mut rtc_rx) = mpsc::unbounded_channel::<(String, RtcEvent)>();
 
     let mut peers: HashMap<String, Peer> = HashMap::new();
+    // A pairing frame only carries a peer id, so the stored name stays a placeholder
+    // until that peer announces itself over the data channel.
+    let mut secret_for_peer: HashMap<String, String> = HashMap::new();
     let mut rtc_config = RtcConfig::default();
     let mut room = RoomRef::new(RoomType::Ip, String::new());
     let mut joined = false;
@@ -155,6 +187,32 @@ async fn main() -> Result<()> {
                         if !joined {
                             handle.send(ClientMessage::JoinIpRoom);
                             joined = true;
+
+                            // Paired rooms have to be re-registered on every connection,
+                            // or a paired device stays invisible until the next pairing.
+                            if let Some(message) = pairing.room_secrets_message() {
+                                handle.send(message);
+                            }
+
+                            if args.unpair_all {
+                                let secrets: Vec<String> =
+                                    pairing.devices().iter().map(|d| d.secret.clone()).collect();
+                                for secret in &secrets {
+                                    for message in pairing.unpair(secret).send {
+                                        handle.send(message);
+                                    }
+                                }
+                                println!("· forgot {} pairing(s)", secrets.len());
+                            }
+                            if args.pair {
+                                handle.send(pairing.begin());
+                            }
+                            if let Some(key) = &args.join {
+                                match pairing.join(key) {
+                                    Ok(message) => handle.send(message),
+                                    Err(error) => println!("✗ {error}"),
+                                }
+                            }
                         }
                     }
 
@@ -168,6 +226,17 @@ async fn main() -> Result<()> {
                     }
 
                     SignalingEvent::Message(message) => {
+                        let outcome = pairing.handle(&message);
+                        for event in &outcome.events {
+                            report_pairing(event);
+                            if let PairingEvent::Paired { secret, peer_id } = event {
+                                secret_for_peer.insert(peer_id.clone(), secret.clone());
+                            }
+                        }
+                        for message in outcome.send {
+                            handle.send(message);
+                        }
+
                         handle_server_message(
                             message, &args, &rtc_tx, &mut peers,
                             &rtc_config, &mut room,
@@ -177,7 +246,23 @@ async fn main() -> Result<()> {
             }
 
             Some((peer_id, event)) = rtc_rx.recv() => {
-                handle_rtc_event(peer_id, event, &args, &handle, &mut peers, &room).await;
+                if let Some(name) = handle_rtc_event(
+                    peer_id.clone(), event, &args, &handle, &mut peers, &room,
+                ).await {
+                    // Give the paired device the name it calls itself, rather than
+                    // leaving the peer id we stored at pairing time.
+                    if let Some(secret) = secret_for_peer.get(&peer_id) {
+                        for message in pairing.set_display_name(secret, &name).send {
+                            handle.send(message);
+                        }
+                    }
+                    if let Some(secret) = secret_for_peer.get(&peer_id) {
+                        if let Some(peer) = peers.get_mut(&peer_id) {
+                            // Paired devices the user marked trusted skip the prompt.
+                            peer.transfer.auto_accept = pairing.auto_accepts(secret);
+                        }
+                    }
+                }
             }
 
             _ = tokio::signal::ctrl_c(), if !stopping => {
@@ -217,7 +302,7 @@ async fn handle_server_message(
     match message {
         ServerMessage::Peers { peers: list, room: peers_room } => {
             *room = peers_room;
-            println!("Room {} ({}): {} peer(s)", room.id, room.kind.as_str(), list.len());
+            println!("Room {}: {} peer(s)", room_label(room), list.len());
             for peer in list {
                 let note = if peer.rtc_supported { "" } else { "  (no WebRTC — needs the ws fallback)" };
                 println!("  • {} [{}]{note}", peer.name.best_label(), peer.id);
@@ -268,6 +353,15 @@ async fn handle_server_message(
         ServerMessage::Unknown { kind } => println!("? unhandled frame {kind:?}"),
         // Already reported through the Identity and WsConfig events.
         ServerMessage::DisplayName { .. } | ServerMessage::WsConfig(_) => {}
+        // Reported by report_pairing. Never Debug-printed: these frames carry the room
+        // secret, which is a bearer credential — anyone holding it can join the room.
+        ServerMessage::PairDeviceInitiated { .. }
+        | ServerMessage::PairDeviceJoined { .. }
+        | ServerMessage::PairDeviceJoinKeyInvalid
+        | ServerMessage::PairDeviceCanceled { .. }
+        | ServerMessage::JoinKeyRateLimit
+        | ServerMessage::SecretRoomDeleted { .. }
+        | ServerMessage::RoomSecretRegenerated { .. } => {}
         other => println!("· {other:?}"),
     }
 }
@@ -318,8 +412,9 @@ async fn handle_rtc_event(
     handle: &SignalingHandle,
     peers: &mut HashMap<String, Peer>,
     room: &RoomRef,
-) {
-    let Some(peer) = peers.get_mut(&peer_id) else { return };
+) -> Option<String> {
+    let mut announced = None;
+    let peer = peers.get_mut(&peer_id)?;
 
     match event {
         RtcEvent::LocalDescription(sdp) => {
@@ -372,9 +467,10 @@ async fn handle_rtc_event(
                 _ => None,
             }) {
                 if let Some(peer) = peers.get_mut(&peer_id) {
-                    peer.label = name;
+                    peer.label = name.clone();
                     maybe_send(peer, args).await;
                 }
+                announced = Some(name);
             }
         }
 
@@ -399,6 +495,42 @@ async fn handle_rtc_event(
             if let Some(mut peer) = peers.remove(&peer_id) {
                 peer.transfer.reset();
             }
+        }
+    }
+
+    announced
+}
+
+/// A secret room's id *is* the pairing credential, so it never reaches the terminal or
+/// a log file. IP room ids are just an address and are safe to show.
+fn room_label(room: &RoomRef) -> String {
+    match room.kind {
+        RoomType::Secret => "paired devices (secret)".to_string(),
+        _ => format!("{} ({})", room.id, room.kind.as_str()),
+    }
+}
+
+/// Pairing is the one flow where the user has to read something off the screen and type
+/// it somewhere else, so these lines matter more than most.
+fn report_pairing(event: &PairingEvent) {
+    match event {
+        PairingEvent::KeyReady { pair_key } => {
+            println!("\n  Pairing key: {pair_key}");
+            println!("  Enter it on the other device within a minute.\n");
+        }
+        PairingEvent::Paired { peer_id, .. } => println!("✓ paired with {peer_id}"),
+        PairingEvent::KeyInvalid => println!("✗ that pairing key isn't valid"),
+        PairingEvent::RateLimited => {
+            println!("✗ too many wrong keys — the server is refusing more attempts for now");
+        }
+        PairingEvent::Canceled => println!("· pairing canceled"),
+        PairingEvent::Unpaired { display_name } => {
+            println!("· {display_name} removed this pairing");
+        }
+        PairingEvent::SecretRotated => println!("· a pairing secret was rotated"),
+        PairingEvent::NotPersisted(reason) => {
+            println!("  ⚠ couldn't save the pairing: {reason}");
+            println!("    It works for this session but won't survive a restart.");
         }
     }
 }

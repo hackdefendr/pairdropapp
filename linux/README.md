@@ -33,10 +33,11 @@ crates/
   pairdrop-net/     WebSocket transport: connect, keepalive, reconnect, TLS
   pairdrop-rtc/       One peer connection and its data channel
   pairdrop-transfer/  The transfer state machine, and file chunking on both sides
+  pairdrop-pairing/   Six-digit pairing, and secrets in the platform credential store
   pairdrop-cli/       `pairdrop-probe` — headless peer and instance diagnostic
 ```
 
-Still to come: secret storage via the Secret Service, pairing, and the GTK4 app.
+Still to come: the GTK4 app.
 
 ## Building
 
@@ -52,7 +53,21 @@ cargo run --bin pairdrop-probe -- https://drop.example.com --quit-after 20
 Verified building and running on Linux too:
 
 ```sh
-docker run --rm -v "$PWD":/w -w /w rust:1.94-slim cargo test
+docker run --rm -v "$PWD":/w -w /w -e CARGO_TARGET_DIR=/w/target/docker \
+    rust:1.94-slim cargo test
+```
+
+`CARGO_TARGET_DIR` matters: macOS and Linux on Apple silicon are both `aarch64` host
+triples, so without it the container and the host fight over `target/debug` — each run
+invalidates the other's build, and running a binary from the wrong one gives
+`Exec format error`.
+
+The credential-store tests are `#[ignore]`d, because they need a live Secret Service and
+write to it — a container or CI runner has none, and a plain `cargo test` shouldn't touch
+the user's keyring. Run them deliberately on a desktop session:
+
+```sh
+cargo test -p pairdrop-pairing --test keyring -- --ignored --test-threads=1
 ```
 
 The UI, when it lands, will need a real desktop session — a container has no display
@@ -88,8 +103,8 @@ ICE:      1 STUN, 0 TURN; ws fallback off
 ```
 
 `--send FILE…` with `--to NAME` to transfer, `--text` to send a message, `--out DIR` for
-where received files land, `--dial` to connect rather than only list,
-`--name` for the name peers see,
+where received files land, `--pair` / `--join KEY` / `--unpair-all` for pairing,
+`--dial` to connect rather than only list, `--name` for the name peers see,
 `--allow-untrusted-tls` for a self-signed certificate, `--quit-after N` to exit on a
 timer, `--max-attempts N` to stop retrying and exit non-zero.
 
@@ -102,6 +117,31 @@ macOS puts this in the menu bar. That doesn't translate: GNOME removed the syste
 So the primary surface is a **small window**, with a tray icon *when the desktop provides
 one* — KDE Plasma, Cinnamon, XFCE, or GNOME with AppIndicator installed. The app has to be
 fully usable without it. Targets are GNOME and KDE Plasma.
+
+## Pairing
+
+Two devices on different networks can't see each other in the IP room. One creates a
+six-digit key, the other enters it, and the server puts both in a shared *secret room*
+they find each other in from anywhere.
+
+```sh
+pairdrop-probe https://drop.example.com --pair          # prints a key
+pairdrop-probe https://drop.example.com --join 823866   # on the other device
+```
+
+The **room secret is a bearer credential** — anyone holding it can join the room and send
+to the device — so it goes in the platform credential store: Secret Service on Linux
+(gnome-keyring, KWallet), Keychain on macOS. It is never written to a config file, and
+never printed: secret-room ids are shown as `paired devices (secret)` precisely so a
+terminal scrollback or a piped log can't leak one.
+
+With no credential store available — a container, a headless box, a session without
+gnome-keyring — pairing still works but lasts only until the process exits, and says so
+on startup. Falling back to a plain file was the alternative and is a worse trade to make
+on the user's behalf without asking.
+
+Secrets are replayed as `room-secrets` on every reconnect; without that a paired device
+stays invisible until the next pairing.
 
 ## Notes on the protocol
 
