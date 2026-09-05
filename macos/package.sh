@@ -17,6 +17,11 @@
 #
 # NOTARY_PROFILE names a keychain profile made with:
 #   xcrun notarytool store-credentials pairdrop --apple-id … --team-id … --password …
+#
+# CI has no keychain to hold a profile, so an App Store Connect API key can be passed
+# straight through instead — set all three:
+#
+#   NOTARY_KEY=/path/AuthKey_ABC123.p8 NOTARY_KEY_ID=ABC123 NOTARY_ISSUER=<uuid>
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -53,9 +58,19 @@ mkdir -p "$DIST"
 #
 # The DMG is notarized too, but stapling the app itself means the copy that ends up
 # in /Applications carries its own ticket and launches even offline.
+# How the submission authenticates: a keychain profile locally, an API key in CI.
+NOTARY_ARGS=()
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+    NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+elif [ -n "${NOTARY_KEY:-}" ]; then
+    : "${NOTARY_KEY_ID:?NOTARY_KEY needs NOTARY_KEY_ID}"
+    : "${NOTARY_ISSUER:?NOTARY_KEY needs NOTARY_ISSUER}"
+    NOTARY_ARGS=(--key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER")
+fi
+
 notarize() {
     local target="$1"
-    [ -n "${NOTARY_PROFILE:-}" ] || return 0
+    [ ${#NOTARY_ARGS[@]} -gt 0 ] || return 0
 
     echo "==> Notarizing $(basename "$target")"
     local upload="$target"
@@ -64,7 +79,7 @@ notarize() {
         ditto -c -k --keepParent "$target" "$upload"
     fi
 
-    xcrun notarytool submit "$upload" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun notarytool submit "$upload" "${NOTARY_ARGS[@]}" --wait
     xcrun stapler staple "$target"
     [ "$upload" = "$target" ] || rm -f "$upload"
 }
@@ -114,7 +129,8 @@ echo
 echo "==> Verifying"
 codesign --verify --deep --strict "$APP" && echo "    signature ok ($IDENTITY)"
 echo "    architectures: $(lipo -archs "$APP/Contents/MacOS/PairDropApp")"
-if [ -n "${NOTARY_PROFILE:-}" ]; then
+if [ ${#NOTARY_ARGS[@]} -gt 0 ]; then
+    # Only a notarized, stapled bundle can pass this; ad-hoc builds always fail it.
     spctl --assess --type execute --verbose=2 "$APP" 2>&1 | sed 's/^/    /'
 fi
 

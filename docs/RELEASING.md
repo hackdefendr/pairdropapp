@@ -56,7 +56,57 @@ NOTARY_PROFILE=pairdrop ./package.sh 0.1.0
 notarizes and staples the disk image. Ad-hoc signing and the hardened runtime are
 mutually exclusive: dyld refuses an embedded framework whose Team ID doesn't match the
 app's, and ad-hoc signatures have no Team ID — so `build.sh` only turns the hardened
-runtime on for a real identity.
+runtime on for a real identity. A real identity also gets `--timestamp`; notarization
+rejects a signature without a secure timestamp.
+
+CI has no keychain to hold a notarization profile, so `package.sh` also accepts an App
+Store Connect API key directly:
+
+```sh
+NOTARY_KEY=~/private_keys/AuthKey_ABC123.p8 \
+NOTARY_KEY_ID=ABC123 \
+NOTARY_ISSUER=12345678-1234-1234-1234-123456789012 \
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./package.sh 0.1.0
+```
+
+## Signed builds in CI
+
+`.github/workflows/release.yml` signs and notarizes when these repository secrets exist,
+and quietly falls back to an ad-hoc build when they don't:
+
+| Secret | What it is |
+|---|---|
+| `MACOS_CERTIFICATE_P12` | base64 of the Developer ID Application `.p12` |
+| `MACOS_CERTIFICATE_PASSWORD` | the password used when exporting it |
+| `APPLE_API_KEY_P8` | base64 of the App Store Connect `AuthKey_*.p8` |
+| `APPLE_API_KEY_ID` | that key's ID |
+| `APPLE_API_ISSUER_ID` | the issuer UUID |
+
+Export the certificate from Keychain Access by selecting the **identity** (the certificate
+with its private key underneath, not the certificate alone) → Export → `.p12`. Then:
+
+```sh
+base64 -i Certificates.p12 | gh secret set MACOS_CERTIFICATE_P12
+gh secret set MACOS_CERTIFICATE_PASSWORD
+base64 -i AuthKey_ABC123.p8 | gh secret set APPLE_API_KEY_P8
+gh secret set APPLE_API_KEY_ID
+gh secret set APPLE_API_ISSUER_ID
+```
+
+The workflow imports the certificate into a throwaway keychain that is deleted when the
+job ends, reads the signing identity out of the certificate itself (so there's no sixth
+secret to drift), and signs by SHA-1 hash rather than by name.
+
+Two things that will waste an afternoon if you hit them cold:
+
+- **Export the `.p12` with the Apple WWDR intermediate**, or the trust chain won't resolve
+  on the runner. The workflow warns rather than failing, since signing often still works,
+  but notarization won't be happy.
+- **If you ever build a `.p12` with OpenSSL 3 rather than Keychain Access**, pass
+  `-legacy -macalg sha1 -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES`. OpenSSL 3 defaults
+  to an AES/SHA-256 encoding that Apple's `security import` cannot read, and the only
+  symptom is `MAC verification failed during PKCS12 import (wrong password?)` — which
+  sends you hunting for a password problem that doesn't exist.
 
 ## 4. Tag and publish
 

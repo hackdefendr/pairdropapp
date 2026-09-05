@@ -1,9 +1,19 @@
 name: Release
 
-# Builds the macOS artifacts when a version tag is pushed and attaches them to the
-# release. These are ad-hoc signed — the signing identity isn't on the runner — so a
-# signed and notarized build still has to be uploaded by hand from a Mac that has the
-# Developer ID. See docs/RELEASING.md.
+# Builds the macOS artifacts when a version tag is pushed and attaches them to a draft
+# release.
+#
+# Signs and notarizes when the repository secrets below are set, and falls back to an
+# ad-hoc signed build when they aren't — so this workflow is useful before an Apple
+# Developer Program membership exists, it just produces a build macOS will quarantine.
+#
+#   MACOS_CERTIFICATE_P12       base64 of the Developer ID Application .p12
+#   MACOS_CERTIFICATE_PASSWORD  the password that .p12 was exported with
+#   APPLE_API_KEY_P8            base64 of the App Store Connect AuthKey_*.p8
+#   APPLE_API_KEY_ID            the key's ID
+#   APPLE_API_ISSUER_ID         the issuer UUID
+#
+# Setting them up: docs/RELEASING.md.
 on:
   push:
     tags: ["v*"]
@@ -35,9 +45,103 @@ jobs:
         working-directory: shared/PairDropKit
         run: swift test
 
-      - name: Package
+      # Secrets can't be read from an `if:` on later steps, so the decision is made once
+      # here and passed along as a plain output.
+      - name: Check for signing credentials
+        id: creds
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          KEY: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -n "$CERT" ] && [ -n "$KEY" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing secrets set — producing an ad-hoc signed build that macOS will quarantine."
+          fi
+
+      # A throwaway keychain, so nothing touches the runner's login keychain and the
+      # private key disappears with the job.
+      - name: Import the Developer ID certificate
+        if: steps.creds.outputs.signed == 'true'
+        id: identity
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+
+          echo -n "$CERT" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
+              -T /usr/bin/codesign -T /usr/bin/security
+          # Without this codesign can't use the key non-interactively and fails with
+          # the famously unhelpful errSecInternalComponent.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+              -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+
+          rm -f "$CERT_PATH"
+
+          # Read the identity out of the cert rather than carrying it as a sixth secret,
+          # so it can never drift from what was actually imported.
+          #
+          # Deliberately not `find-identity -v`: that lists only identities whose trust
+          # chain resolves, so a .p12 exported without the Apple WWDR intermediate would
+          # look like no identity at all. The unfiltered listing appends a reason such as
+          # `(CSSMERR_TP_NOT_TRUSTED)` *outside* the quoted name, hence the anchored sed.
+          LINE="$(security find-identity -p codesigning "$KEYCHAIN" \
+              | grep 'Developer ID Application' | head -1)"
+          if [ -z "$LINE" ]; then
+            echo "::error::No Developer ID Application identity in MACOS_CERTIFICATE_P12."
+            security find-identity -p codesigning "$KEYCHAIN"
+            exit 1
+          fi
+
+          # Sign by SHA-1 hash, not by name: it's unambiguous when several certificates
+          # share a subject, and it sidesteps quoting the name entirely.
+          HASH="$(echo "$LINE" | awk '{print $2}')"
+          NAME="$(echo "$LINE" | sed -E 's/^[^"]*"([^"]*)".*$/\1/')"
+          echo "Signing as: $NAME ($HASH)"
+
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "$HASH"; then
+            echo "::warning::Certificate imported but its trust chain doesn't resolve — export the .p12 with the Apple WWDR intermediate included. Signing will be attempted anyway."
+          fi
+
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "keychain=$KEYCHAIN" >> "$GITHUB_OUTPUT"
+
+      - name: Package (signed and notarized)
+        if: steps.creds.outputs.signed == 'true'
+        working-directory: macos
+        env:
+          SIGN_IDENTITY: ${{ steps.identity.outputs.hash }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+          API_KEY: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          export NOTARY_KEY="$RUNNER_TEMP/AuthKey.p8"
+          echo -n "$API_KEY" | base64 --decode > "$NOTARY_KEY"
+          trap 'rm -f "$NOTARY_KEY"' EXIT
+          ./package.sh "${{ steps.version.outputs.value }}"
+
+      - name: Package (ad-hoc)
+        if: steps.creds.outputs.signed == 'false'
         working-directory: macos
         run: ./package.sh "${{ steps.version.outputs.value }}"
+
+      - name: Remove the signing keychain
+        if: always() && steps.identity.outputs.keychain != ''
+        run: |
+          security list-keychain -d user -s login.keychain-db
+          security delete-keychain "${{ steps.identity.outputs.keychain }}" || true
 
       - uses: actions/upload-artifact@v4
         with:
